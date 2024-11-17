@@ -1,0 +1,78 @@
+- hosts: localhost
+  connection: local
+  gather_facts: False
+
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+    key_name: newkey15
+    region: eu-central-1
+    image: ami-0e04bcbe83a83792e
+    id: web-app
+    sec_group: my-security-group
+    ssh_key_path: /home/lab/Téléchargements/newkey15.pem
+    # ssh_key_path: /home/ansible/Downloads/newkey15.pem
+
+  tasks:
+    - name: Créer un groupe de sécurité
+      amazon.aws.ec2_group:
+        name: "{{ sec_group }}"
+        description: "Sécurité pour SSH et HTTP"
+        vpc_id: vpc-05a4d6626e49d7e0f
+        region: "{{ region }}"
+        rules:
+          - proto: tcp
+            ports:
+              - 22
+              - 80
+            cidr_ip: 0.0.0.0/0
+        state: present
+      register: result_sec_group
+
+    - name: Lancer une nouvelle instance EC2 avec Ubuntu 24.04
+      amazon.aws.ec2_instance:
+        key_name: "{{ key_name }}"
+        instance_type: t2.micro
+        image_id: "{{ image }}"
+        region: "{{ region }}"
+        wait: true
+        count: 1
+        tags:
+          Name: "machine"
+        vpc_subnet_id: subnet-001b17339901eb267
+        security_group: "{{ sec_group }}"
+        state: present
+      register: ec2
+
+    - name: Attendre que l'instance soit disponible
+      amazon.aws.ec2_instance_info:
+        region: "{{ region }}"
+        filters:
+          instance-id: "{{ ec2.instances[0].instance_id }}"
+      register: instance_facts
+
+    - name: Attendre que l'instance soit prête à recevoir les connexions SSH
+      wait_for:
+        host: "{{ instance_facts.instances[0].public_ip_address }}"
+        port: 22
+        delay: 60
+        timeout: 320
+        state: started
+
+    - name: Connecter, installer Nginx et modifier la page par défaut
+      ansible.builtin.shell: |
+        ssh -o StrictHostKeyChecking=no -i {{ ssh_key_path }} ubuntu@{{ instance_facts.instances[0].public_ip_address }} <<EOF
+        sudo apt update
+        sudo apt install -y nginx
+        sudo systemctl enable nginx
+        sudo systemctl start nginx
+        echo "Hello World" | sudo tee /var/www/html/index.nginx-debian.html
+        EOF
+      delegate_to: localhost
+
+    - name: Afficher les informations de l'instance créée
+      debug:
+        var: ec2.instances
+
+    - name: Afficher un message de succès
+      debug:
+        msg: "La VM est créée, Nginx est installé, et la page affiche 'Hello World'. Profite bien ! :)"
